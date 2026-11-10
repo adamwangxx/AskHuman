@@ -3,6 +3,45 @@
 记录需要跨会话保留的未完成 / 延期事项和明确下一步。任务 / 需求完成后删除其 section
 （历史留在 git）。
 
+## 待决定日常安装：Lody 子会话交互静默
+
+2026-11-10 用户已恢复修复工作，已授权编译、隔离回归及提交到个人 GitHub fork，**暂不替换日常版**。已安装标准 Rust
+stable 1.99.1（aarch64-apple-darwin，default profile）至 `~/.cargo` / `~/.rustup`，含 Cargo/rustfmt/Clippy，
+新终端 PATH 生效。修复保存在 [个人 fork 的功能分支](https://github.com/adamwangxx/AskHuman/tree/fix/lody-interaction-silence)，
+未修改用户日常 AskHuman 配置。
+
+已确认设计：通用 `ASKHUMAN_INTERACTION=off` 与 `interaction.suppressWhen` 环境条件（非空或精确匹配，
+任一命中静默）；优先于允许委派运行的偏好。Codex 全链路覆盖协议注入、MCP、直接 CLI、Stop/权限确认，
+保留跟踪与只读查询。Hook 按 native session ID 留标记，覆盖 MCP 环境过滤；恢复/压缩重新判断，终端接管清旧标记。
+计划为用户配置 `LODY_OPENED_BY_SESSION_ID` 非空规则，当前尚未配置；不使用主/子会话都有的 `LODY_SESSION_ID`。
+其他 Agent 仅本轮通用 CLI/MCP 开关，完整 Hook/协议适配不在本轮范围。
+
+实现入口：`src-tauri/src/interaction.rs`；接入 `agents/delegated.rs`、`agents/context_recovery.rs`、
+`mcp/ask.rs`、`cli/mod.rs`、`cli/todo_cmd.rs`、`cli/config_cmd.rs`，及 Rust/TypeScript 配置类型。
+规则数组需要 config 命令显式支持，已加入 set/unset 与非法规则不覆盖原配置的回归。
+规格见 [外部宿主交互控制](specs/external-interaction-control.md)。
+
+已完成：Rust 全量 2930 passed / 11 ignored；随后新增 config 用例专项 2 passed；前端类型检查和两项生产构建通过。
+严格 Clippy（含测试，`-D warnings`）及本次 Rust 文件格式/差异空白检查通过；vendor tao 仍有既有依赖警告。
+`scripts/install.sh` 通过，**仅安装到私有** `/private/tmp/askhuman-lody-verification/bin/AskHuman`，ad-hoc 签名，
+未加入 PATH，未替换日常 npm 程序。该路径可能被系统清理；构建产物也在 `src-tauri/target/local-install/AskHuman`。
+本机 Corepack 对最新 pnpm 12 启动不兼容，构建使用仓库 CI 同款 pnpm 10（`corepack pnpm@10`），未更改项目依赖版本。
+
+隔离脚本已从旧版红到私有新安装版绿：真实 CLI/MCP/Hook、只读工具、环境过滤后的会话标记、
+直接 CLI 静默、自动待办不出队、有效 Stop/权限 Hook 无决定、恢复/压缩与终端接管、配置规则往返均通过。
+脚本可选 `--codex <路径>`，已用 Lody 自带 Codex 0.164.0 验证真实可信 SessionStart 写标记后 MCP 拦截。
+唯一推理端点配置为关闭的 `http://127.0.0.1:9`，没有凭据和计费模型调用；临时 daemon 已清理。
+
+诊断依据：Lody 创建独立 app-server 顶层线程，现有 exec/ephemeral/特定 originator 检测不命中；
+本机抽查 Lody 子会话 `source=vscode`、`originator=acp-extension-codex`，并有持久化 transcript。
+Lody 的创建者环境变量可被 Codex SessionStart Hook 继承（隔离真实 Codex 0.164.0、无模型调用验证）。
+临时源码与取证位于 `/private/tmp/askhuman-lody-investigation`；该目录可能被系统清理。
+
+隔离验证结论已报告。下一步在用户另行授权后备份并替换日常程序、配置 Lody 规则和进行日常会话验证。
+也可等作者反馈再决定是否调整设计。
+需核对实际 npm 二进制与 MCP 入口，不能假定新建 `~/.local/bin/AskHuman` 会替换当前入口。
+原有 `src-tauri/icons/icon.icns` 差异与本任务无关，保留。
+
 ## 待日常观察 Cursor 离开汇报后结束
 
 2026-11-09 已完成主树实现并安装，开关位于 Cursor 集成，默认关闭。

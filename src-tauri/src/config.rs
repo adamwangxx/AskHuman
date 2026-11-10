@@ -687,6 +687,8 @@ impl Default for TodoSyncConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
+    /// Explicit host controls, independent of delegated-run preferences.
+    pub interaction: crate::interaction::Config,
     pub codex_desktop: crate::codex_desktop::Config,
     pub cursor_desktop: crate::cursor_desktop::Config,
     pub general: GeneralConfig,

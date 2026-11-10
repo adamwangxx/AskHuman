@@ -10,6 +10,13 @@
 
 ## 字段地图
 
+- `interaction.suppressWhen`：默认 `[]`，任一环境条件命中即禁用交互。条件 `{"env":"NAME"}`
+  匹配非空值，`{"env":"NAME","equals":"value"}` 精确匹配（区分大小写，支持空字符串；未设置变量不匹配）。
+  通用显式关闭为 `ASKHUMAN_INTERACTION=off`；两者优先于允许 Codex 委派运行的偏好，不提供强制打开。
+  可通过 `config set interaction.suppressWhen '<JSON数组>'` 配置；本轮无可视化编辑器。
+  Codex Hook 将静默关联到 native session ID 以覆盖 MCP 环境过滤，直接 CLI 同样受约束，
+  会话跟踪与只读查询保留。规则只在配置后生效，不内置 Lody 特例。详见
+  [外部宿主交互控制](specs/external-interaction-control.md)。
 - `cursorDesktop.endEscalationsWhileAway` 默认 `false`。Cursor 集成里的「离开时汇报后结束」
   开关让有效离开状态下带理由的升级留成待阅汇报，立即返回结束回执，回来后在当前列表点「已阅」。
   ⚡ 自动待办先执行。普通 ask 和 whats_next 共用此规则，详见

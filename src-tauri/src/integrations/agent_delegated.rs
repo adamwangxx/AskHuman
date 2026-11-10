@@ -4,7 +4,8 @@
 //! A delegated run is a non-interactive run that another agent, script, or plugin started (for
 //! example `codex exec`). By default AskHuman stays silent there, as if it were not integrated.
 //! This is a pure preference: it changes no on-disk integration artifact, only affects runs that
-//! start after it is changed, and has no environment override.
+//! start after it is changed. Explicit host interaction policy is separate and takes precedence
+//! over this preference; see `crate::interaction`.
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};

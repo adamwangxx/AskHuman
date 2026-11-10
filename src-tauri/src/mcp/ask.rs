@@ -231,7 +231,50 @@ fn codex_session_id<'a>(meta: &'a Meta, metadata: Option<&'a Value>) -> Option<&
 ///
 /// `todo_list` does not call this: it only reads, and a delegated run listing todos changes nothing.
 fn codex_thread_guard(meta: &Meta, tool: &str) -> Option<CallToolResult> {
-    codex_thread_guard_with(meta, tool, &crate::agents::delegated::marker_silenced)
+    if tool != "show_last" {
+        if let Some(blocked) = external_interaction_guard_with(
+            meta,
+            tool,
+            crate::interaction::suppression(),
+            &crate::agents::delegated::external_marker_silenced,
+        ) {
+            return Some(blocked);
+        }
+    }
+    codex_thread_guard_with(
+        meta,
+        tool,
+        &crate::agents::delegated::implicit_marker_silenced,
+    )
+}
+
+/// Explicit policy works for any client, including clients without Codex turn metadata. Session
+/// markers bridge the environment whitelist in Codex MCP processes; plain threadId is sufficient.
+fn external_interaction_guard_with(
+    meta: &Meta,
+    tool: &str,
+    environment_reason: Option<&str>,
+    marker: &dyn Fn(&str) -> Option<String>,
+) -> Option<CallToolResult> {
+    let metadata = codex_turn_metadata(meta);
+    let session_id = codex_session_id(meta, metadata.as_ref());
+    let reason = environment_reason
+        .map(str::to_string)
+        .or_else(|| session_id.and_then(marker))?;
+    crate::daemon::lifecycle::log_guard_audit(crate::daemon::lifecycle::GuardAudit {
+        component: "mcp_tool",
+        action: "suppressed",
+        reason: &reason,
+        tool: Some(tool),
+        agent: session_id.map(|_| "codex"),
+        thread_source: metadata.as_ref().and_then(codex_thread_source),
+        session_id,
+        thread_id: None,
+        turn_id: None,
+    });
+    Some(CallToolResult::error(vec![ContentBlock::text(
+        crate::interaction::DISABLED_MESSAGE,
+    )]))
 }
 
 fn codex_thread_guard_with(
@@ -459,7 +502,8 @@ fn this_process_is_delegated_exec() -> bool {
         return false;
     }
     let allowed = crate::integrations::agent_delegated::allowed(crate::agents::AgentKind::Codex);
-    if allowed {
+    // Explicit policy keeps read-only tools available and rejects writes per call.
+    if allowed || crate::interaction::suppression().is_some() {
         return false;
     }
     delegated_run_hides_tools(
@@ -1888,6 +1932,35 @@ mod tests {
 
     fn marker_for(session: &'static str) -> impl Fn(&str) -> Option<String> {
         move |id| (id == session).then(|| "codex_delegated_marker:exec_process".to_string())
+    }
+
+    #[test]
+    fn external_policy_guards_clients_without_turn_metadata_and_with_only_thread_id() {
+        let none = meta(json!({}));
+        let explicit =
+            external_interaction_guard_with(&none, "ask", Some("interaction_env_off"), &|_| None)
+                .unwrap();
+        assert_eq!(explicit.is_error, Some(true));
+        assert_eq!(result_text(&explicit), crate::interaction::DISABLED_MESSAGE);
+        for metadata in [
+            meta(json!({"threadId": "sess-1"})),
+            codex_meta(json!({"session_id": "sess-1"})),
+        ] {
+            assert!(
+                external_interaction_guard_with(&metadata, "ask", None, &marker_for("sess-1"))
+                    .is_some()
+            );
+            assert!(external_interaction_guard_with(
+                &metadata,
+                "ask",
+                None,
+                &marker_for("other-session")
+            )
+            .is_none());
+        }
+        assert!(
+            external_interaction_guard_with(&none, "ask", None, &marker_for("sess-1")).is_none()
+        );
     }
 
     fn result_text(result: &CallToolResult) -> String {

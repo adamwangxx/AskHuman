@@ -1259,6 +1259,7 @@ export interface AgentTaskReadiness {
 }
 
 export interface AppConfig {
+  interaction?: {suppressWhen: {env: string; equals?: string | null}[]};
   codexDesktop?: {appPath: string; codexHome: string; launchPreference: "terminal" | "desktop"};
   cursorDesktop?: {suppressBackgroundCompletionFollowUp: boolean; endEscalationsWhileAway?: boolean; launchPreference?: "terminal" | "desktop"};
   general: GeneralConfig;

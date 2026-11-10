@@ -5,8 +5,8 @@
 //! run AskHuman must behave as if it were not integrated (D1), so every AskHuman surface asks this
 //! module before it interacts:
 //!
-//! * SessionStart (the protocol carrier) classifies the run once per session and leaves a marker
-//!   file when the run is delegated;
+//! * SessionStart (the protocol carrier) classifies the run and leaves a marker file when silent;
+//!   explicit host policy is re-evaluated on every SessionStart, including resume and compact;
 //! * the MCP server, Stop confirmation, and PermissionRequest read that marker (Stop and
 //!   permission also fall back to a bounded ancestor probe when the marker is missing);
 //! * everything fails open: a missing, unreadable, or conflicting signal means "interactive".
@@ -37,9 +37,11 @@ const MARKER_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// Pruning scans at most this many directory entries per write.
 const MARKER_SCAN_LIMIT: usize = 500;
 
-/// Why a run was judged delegated.
+/// Why a run must remain silent (implicit delegation or explicit host policy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
+    /// An explicit host override or configured environment condition disabled interaction.
+    ExternalPolicy,
     /// Hook input carries `transcript_path: null`: an ephemeral / non-persisted thread.
     TranscriptNull,
     /// The nearest Agent ancestor is `codex exec` / `e` / `review`.
@@ -54,6 +56,7 @@ impl Signal {
     /// Stable name stored in marker files.
     pub fn name(self) -> &'static str {
         match self {
+            Signal::ExternalPolicy => "external_interaction_policy",
             Signal::TranscriptNull => "transcript_null",
             Signal::ExecProcess => "exec_process",
             Signal::RolloutSource => "rollout_source",
@@ -63,6 +66,7 @@ impl Signal {
 
     fn parse(name: &str) -> Option<Self> {
         [
+            Signal::ExternalPolicy,
             Signal::TranscriptNull,
             Signal::ExecProcess,
             Signal::RolloutSource,
@@ -75,11 +79,16 @@ impl Signal {
     /// `askhuman_guard` audit reason.
     pub fn reason(self) -> &'static str {
         match self {
+            Signal::ExternalPolicy => "interaction_external_policy",
             Signal::TranscriptNull => "codex_transcript_path_null",
             Signal::ExecProcess => "codex_delegated_exec_process",
             Signal::RolloutSource => "codex_delegated_rollout_source",
             Signal::RolloutOriginator => "codex_delegated_rollout_originator",
         }
+    }
+
+    pub fn is_external(self) -> bool {
+        self == Signal::ExternalPolicy
     }
 }
 
@@ -90,6 +99,10 @@ pub fn marker_reason(signal: Signal) -> String {
 
 /// Everything detection reads from the outside world, so the decision logic is testable.
 pub trait Probes {
+    /// Current host policy. Unlike delegated detection, this overrides the allow preference.
+    fn interaction_disabled(&self) -> bool {
+        false
+    }
     /// The "allow delegated Codex runs to use AskHuman" preference.
     fn allowed(&self) -> bool;
     fn marker(&self, session_id: &str) -> Option<Signal>;
@@ -105,6 +118,9 @@ pub trait Probes {
 pub struct System;
 
 impl Probes for System {
+    fn interaction_disabled(&self) -> bool {
+        crate::interaction::suppression().is_some()
+    }
     fn allowed(&self) -> bool {
         crate::integrations::agent_delegated::allowed(super::AgentKind::Codex)
     }
@@ -195,20 +211,24 @@ fn current_run_signal(probes: &dyn Probes, input: &Value) -> Option<Signal> {
 ///
 /// Rollout signals describe how a thread was *created*, not who is running it now, so they are
 /// used only for brand-new threads (`startup` / `clear`): a human resuming an old `codex exec`
-/// thread from the TUI (`resume` / `fork`) is interactive. `compact` keeps whatever verdict the
-/// session already has.
+/// thread from the TUI (`resume` / `fork`) is interactive. `compact` keeps implicit delegation,
+/// but explicit host policy must still match the current environment.
 pub fn classify_session_start(
     probes: &dyn Probes,
     source: &str,
     session_id: &str,
     input: &Value,
 ) -> Option<Signal> {
+    if probes.interaction_disabled() {
+        return Some(Signal::ExternalPolicy);
+    }
     match source {
         "startup" | "clear" => current_run_signal(probes, input)
             .or_else(|| transcript_path_of(input).and_then(|path| probes.rollout_signal(path))),
         "compact" => (!session_id.is_empty())
             .then(|| probes.marker(session_id))
             .flatten()
+            .filter(|signal| !signal.is_external())
             .or_else(|| current_run_signal(probes, input)),
         _ => current_run_signal(probes, input),
     }
@@ -216,8 +236,9 @@ pub fn classify_session_start(
 
 /// Whether Stop / PermissionRequest must stay out of the way. Returns the audit reason.
 ///
-/// Order: preference allows → interactive; marker → delegated; `transcript_path: null` →
-/// delegated; bounded ancestor probe → delegated (and the marker is written so later calls are
+/// Order: explicit host policy or its marker → silent; preference allows → interactive;
+/// implicit marker / `transcript_path: null` → delegated; bounded ancestor probe → delegated
+/// (and the marker is written so later calls are
 /// cheap and the MCP guard sees it). The probe makes the exec case work even when the SessionStart
 /// hook has not been migrated or trusted yet.
 pub fn silenced_with(
@@ -225,13 +246,21 @@ pub fn silenced_with(
     session_id: &str,
     input: Option<&Value>,
 ) -> Option<String> {
-    if probes.allowed() {
-        return None;
+    if probes.interaction_disabled() {
+        if !session_id.is_empty() {
+            probes.write_marker(session_id, Signal::ExternalPolicy);
+        }
+        return Some(Signal::ExternalPolicy.reason().into());
     }
     if !session_id.is_empty() {
         if let Some(signal) = probes.marker(session_id) {
-            return Some(marker_reason(signal));
+            if signal.is_external() || !probes.allowed() {
+                return Some(marker_reason(signal));
+            }
         }
+    }
+    if probes.allowed() {
+        return None;
     }
     if input.is_some_and(transcript_path_is_null) {
         return Some(Signal::TranscriptNull.reason().to_string());
@@ -253,14 +282,39 @@ pub fn silenced(session_id: &str, input: Option<&Value>) -> Option<String> {
 /// Marker-only check for the MCP call guard (the exec case is already handled by hiding the tools
 /// at startup). Returns the audit reason.
 pub fn marker_silenced_with(probes: &dyn Probes, session_id: &str) -> Option<String> {
-    if session_id.is_empty() || probes.allowed() {
+    if session_id.is_empty() {
         return None;
     }
-    probes.marker(session_id).map(marker_reason)
+    probes
+        .marker(session_id)
+        .filter(|signal| signal.is_external() || !probes.allowed())
+        .map(marker_reason)
 }
 
 pub fn marker_silenced(session_id: &str) -> Option<String> {
     marker_silenced_with(&System, session_id)
+}
+
+/// Only explicit host policy affects direct CLI and read/write distinctions in MCP.
+pub fn external_marker_silenced(session_id: &str) -> Option<String> {
+    if session_id.is_empty() {
+        return None;
+    }
+    System
+        .marker(session_id)
+        .filter(|signal| signal.is_external())
+        .map(marker_reason)
+}
+
+/// Historical delegated-run policy also guards MCP show_last; external policy permits reads.
+pub fn implicit_marker_silenced(session_id: &str) -> Option<String> {
+    if session_id.is_empty() || System.allowed() {
+        return None;
+    }
+    System
+        .marker(session_id)
+        .filter(|signal| !signal.is_external())
+        .map(marker_reason)
 }
 
 // ── Rollout first line ──────────────────────────────────────────────────────────────────────
@@ -390,6 +444,7 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         allowed: bool,
+        external: bool,
         markers: RefCell<HashMap<String, Signal>>,
         exec: bool,
         exec_probes: Cell<usize>,
@@ -398,6 +453,9 @@ mod tests {
     }
 
     impl Probes for Fake {
+        fn interaction_disabled(&self) -> bool {
+            self.external
+        }
         fn allowed(&self) -> bool {
             self.allowed
         }
@@ -465,6 +523,37 @@ mod tests {
             classify_session_start(&plugin, "clear", "s1", &input(json!("/r.jsonl"))),
             Some(Signal::RolloutOriginator)
         );
+    }
+
+    #[test]
+    fn external_policy_wins_over_allow_and_is_rechecked_after_takeover() {
+        let probes = Fake {
+            allowed: true,
+            external: true,
+            ..Fake::default()
+        };
+        for source in ["startup", "resume", "fork", "clear", "compact"] {
+            assert_eq!(
+                classify_session_start(&probes, source, "s1", &input(json!("/r.jsonl"))),
+                Some(Signal::ExternalPolicy)
+            );
+        }
+        assert_eq!(
+            silenced_with(&probes, "s1", None).as_deref(),
+            Some("interaction_external_policy")
+        );
+        assert_eq!(
+            marker_silenced_with(&probes, "s1").as_deref(),
+            Some("codex_delegated_marker:external_interaction_policy")
+        );
+        let takeover = Fake::default();
+        takeover.write_marker("s1", Signal::ExternalPolicy);
+        for source in ["resume", "compact"] {
+            assert_eq!(
+                classify_session_start(&takeover, source, "s1", &input(json!("/r.jsonl"))),
+                None
+            );
+        }
     }
 
     #[test]

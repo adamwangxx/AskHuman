@@ -141,10 +141,9 @@ fn codex_session_start(mode: Mode, input: &Value, env: &CodexEnv<'_>) -> Option<
     let source = delegated::session_start_source(input);
     let session_id = delegated::session_id_of(input).unwrap_or_default();
 
-    if !env.probes.allowed() {
-        if let Some(signal) =
-            delegated::classify_session_start(env.probes, &source, &session_id, input)
-        {
+    if let Some(signal) = delegated::classify_session_start(env.probes, &source, &session_id, input)
+    {
+        if signal.is_external() || !env.probes.allowed() {
             if !session_id.is_empty() {
                 env.probes.write_marker(&session_id, signal);
             }
@@ -739,6 +738,7 @@ mod codex_flow_tests {
     #[derive(Default)]
     struct FakeProbes {
         allowed: bool,
+        external: bool,
         exec: bool,
         rollout: Option<Signal>,
         marker: Option<Signal>,
@@ -748,6 +748,9 @@ mod codex_flow_tests {
     }
 
     impl Probes for FakeProbes {
+        fn interaction_disabled(&self) -> bool {
+            self.external
+        }
         fn allowed(&self) -> bool {
             self.allowed
         }
@@ -886,6 +889,34 @@ mod codex_flow_tests {
             harness.probes.rollout_paths.borrow().is_empty(),
             "rollout signals are for new threads only"
         );
+    }
+
+    #[test]
+    fn host_policy_suppresses_injection_despite_allow_and_clears_on_takeover() {
+        for source in ["startup", "resume", "compact"] {
+            let harness = Harness {
+                probes: FakeProbes {
+                    allowed: true,
+                    external: true,
+                    ..FakeProbes::default()
+                },
+                ..Harness::default()
+            };
+            assert!(harness.run(Mode::Mcp, input(source)).is_none());
+            assert_eq!(
+                harness.probes.written.borrow().as_slice(),
+                [("sess-1".into(), Signal::ExternalPolicy)]
+            );
+            let takeover = Harness {
+                probes: FakeProbes {
+                    marker: Some(Signal::ExternalPolicy),
+                    ..FakeProbes::default()
+                },
+                ..Harness::default()
+            };
+            assert!(takeover.context(Mode::Mcp, input(source)).is_some());
+            assert_eq!(takeover.probes.cleared.borrow().as_slice(), ["sess-1"]);
+        }
     }
 
     #[test]

@@ -629,7 +629,7 @@ pub fn dispatch() {
             print_line(&help::agent_help_text(lang));
             exit(1);
         }
-        _ => match parse_ask_with_stdin(&argv[1..], lang) {
+        _ => match parse_interactive_ask(&argv[1..], lang) {
             Ok(parsed) => {
                 // 解析 Message 的展示附件（-f 始终归 Message）。
                 let files = match file_attachment::resolve(&parsed.message_files, lang) {
@@ -743,6 +743,24 @@ pub fn dispatch() {
                 exit(1);
             }
         },
+    }
+}
+
+fn parse_interactive_ask(args: &[String], lang: Lang) -> Result<args::AskArgs, String> {
+    require_interaction();
+    parse_ask_with_stdin(args, lang)
+}
+
+pub(super) fn require_interaction() {
+    let context = caller_context();
+    let marked = context.agent_kind.as_deref() == Some("codex")
+        && context
+            .agent_session_id
+            .as_deref()
+            .is_some_and(|id| crate::agents::delegated::external_marker_silenced(id).is_some());
+    if crate::interaction::suppression().is_some() || marked {
+        eprintln!("{}", crate::interaction::DISABLED_MESSAGE);
+        exit(1);
     }
 }
 

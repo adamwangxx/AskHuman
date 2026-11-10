@@ -10,6 +10,12 @@ use std::process::exit;
 
 /// `AskHuman todo <add|list|rm|clear> …` 入口（args 不含 "todo" 本身）。
 pub fn dispatch(args: &[String], lang: Lang) -> ! {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("add" | "rm" | "attach" | "detach" | "clear")
+    ) {
+        super::require_interaction();
+    }
     let project = crate::project::detect();
     if project.is_empty() {
         // cwd 都取不到（极端环境）：无法归属项目。

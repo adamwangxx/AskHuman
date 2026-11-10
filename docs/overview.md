@@ -132,6 +132,7 @@ AskHuman/
       history.rs             JSONL 回复历史存储
       show_last.rs           按 Agent session/MCP instance 恢复最近完成问答
       context_binding.rs     MCP 会话的一次性 token 与 Grok 安全旁路绑定
+      interaction.rs         外部宿主显式交互关闭与可配置环境条件
       todos.rs               项目级待办队列（todos.json 直读直写 + 文件锁）
       todo_attachments.rs    Todo 附件托管、缩略图、生命周期与执行交付副本
       todo_sync/             跨 Mac 待办同步核心（实验，仅 macOS；专题见 overview-todo-sync.md）
@@ -541,7 +542,11 @@ Daemon 里的又一个渠道：手机上的 AskHuman App 回答问题、看 / �
 - Codex 配置把 `mcp__askhuman` 加入 Code Mode direct-only namespace，确保 ask 顶层阻塞；最小编辑与所有权记录避免卸载用户原有配置。
 - Codex 委派运行（偏好「允许被委派的 Codex 运行使用 AskHuman」，默认关，`agents delegated codex [on|off]`）与未集成表现一致：
   `codex exec` / `review` 里 MCP 工具不出现（`AskHuman mcp` 启动时一次有界祖先探测，`tools/list` 为空），其余委派线程的
-  MCP 调用、Stop 确认与权限审批按 SessionStart 写下的标记静默；CLI 不拦、会话登记不变。
+  MCP 调用、Stop 确认与权限审批按 SessionStart 写下的标记静默；单独的委派偏好不拦 CLI、会话登记不变。
+  另有外部宿主显式控制：`ASKHUMAN_INTERACTION=off` 或 `interaction.suppressWhen` 环境条件命中时，
+  Codex 零协议注入、MCP 交互工具和直接 CLI 快速报禁用、Stop/权限让回原生处理；保留跟踪和只读查询。
+  此策略优先于允许委派运行的偏好，Hook 在恢复/压缩时重新判定并清理过期标记。详见
+  [外部宿主交互控制](specs/external-interaction-control.md)。
 
 ## Agent 原生权限审批（Claude Code / Codex）
 

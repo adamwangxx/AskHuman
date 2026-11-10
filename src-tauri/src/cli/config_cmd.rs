@@ -124,7 +124,14 @@ fn set(args: &[String], lang: Lang) -> Result<(), String> {
             )
         })?
         .clone();
-    let coerced = cfgio::coerce_to_type(&existing, value_str)?;
+    let coerced = if key == "interaction.suppressWhen" {
+        // This structured setting is intentionally editable without opening the settings UI.
+        let conditions: Vec<crate::interaction::EnvCondition> = serde_json::from_str(value_str)
+            .map_err(|error| format!("expected a JSON environment condition array: {error}"))?;
+        serde_json::to_value(conditions).map_err(|error| error.to_string())?
+    } else {
+        cfgio::coerce_to_type(&existing, value_str)?
+    };
     cfgio::set_path(&mut v, &key, coerced)?;
     cfg = serde_json::from_value(v).map_err(|e| {
         cfgio::t(
@@ -288,6 +295,7 @@ fn help(lang: Lang) -> String {
   config path                     Print the config file path\n\
 \n\
   Keys: general.* / channels.<name>.* / channels.autoActivation / experimental.enabled\n\
+  Structured key: interaction.suppressWhen (JSON array of {env, equals?})\n\
   Secret keys: channels.dingding.clientSecret, channels.feishu.appSecret,\n\
                channels.telegram.botToken, channels.slack.botToken, channels.slack.appToken,\n\
                channels.ios.password",
@@ -301,6 +309,7 @@ fn help(lang: Lang) -> String {
   config path                     打印配置文件路径\n\
 \n\
   键：general.* / channels.<渠道>.* / channels.autoActivation / experimental.enabled\n\
+  结构化键：interaction.suppressWhen（JSON 数组，每项包含 env，可选 equals）\n\
   密钥键：channels.dingding.clientSecret、channels.feishu.appSecret、\n\
           channels.telegram.botToken、channels.slack.botToken、channels.slack.appToken、\n\
           channels.ios.password",
@@ -348,5 +357,39 @@ mod tests {
         uistate::update(|state| state.onboarding.background_decided = false);
         assert!(set(&args(&["general.menuBarIcon", "sideways"]), Lang::En).is_err());
         assert!(!uistate::load().onboarding.background_decided);
+    }
+
+    #[test]
+    fn interaction_conditions_round_trip_and_invalid_rules_do_not_replace_config() {
+        if !testutil::in_child() {
+            testutil::run_in_child(
+                module_path!(),
+                "interaction_conditions_round_trip_and_invalid_rules_do_not_replace_config",
+            );
+            return;
+        }
+        let rules = r#"[{"env":"LODY_OPENED_BY_SESSION_ID"},{"env":"ROLE","equals":"worker"}]"#;
+        set(&args(&["interaction.suppressWhen", rules]), Lang::En).unwrap();
+        let config = AppConfig::load_without_secrets();
+        assert_eq!(config.interaction.suppress_when.len(), 2);
+        assert_eq!(
+            config.interaction.suppress_when[1].equals.as_deref(),
+            Some("worker")
+        );
+        let before = std::fs::read(crate::paths::config_file()).unwrap();
+        for invalid in [
+            r#"[{"env":""}]"#,
+            r#"[{"env":"ROLE","equal":"worker"}]"#,
+            "{}",
+            "not json",
+        ] {
+            assert!(set(&args(&["interaction.suppressWhen", invalid]), Lang::En).is_err());
+            assert_eq!(std::fs::read(crate::paths::config_file()).unwrap(), before);
+        }
+        unset(&args(&["interaction.suppressWhen"]), Lang::En).unwrap();
+        assert!(AppConfig::load_without_secrets()
+            .interaction
+            .suppress_when
+            .is_empty());
     }
 }
